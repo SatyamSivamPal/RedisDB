@@ -1,9 +1,18 @@
 from logger import logger
+from typing import Any
 from Config import config
 import socket
 from Core import resp, cmd, eval
 
-def readCommand(clientSocket: socket.socket) -> tuple[cmd.RedisCmd | None, Exception | None]:
+def toArrayString(data: list[Any]) -> tuple[list[str], ValueError | None]:
+    res:list[str] = [None] * len(data)
+
+    for i in range(len(data)):
+        res[i] = str(data[i])
+
+    return res, None
+
+def readCommands(clientSocket: socket.socket) -> tuple[cmd.RedisCmds | None, Exception | None]:
     buffer = bytearray()
     chunk = clientSocket.recv(512)
 
@@ -11,26 +20,25 @@ def readCommand(clientSocket: socket.socket) -> tuple[cmd.RedisCmd | None, Excep
         return None, None
 
     buffer.extend(chunk)
-    tokens, err = resp.DecodeArrayString(buffer)
+    values, err = resp.Decode(buffer)
     if err is not None:
         return None, err
 
-    command = cmd.RedisCmd(
-        cmd = tokens[0],
-        args = tokens[1:]
-    )
+    cmds: list[cmd.RedisCmd] = []
+    for value in values:
+        tokens, err = toArrayString(value)
+        if err is not None:
+            return None, err
 
-    return command, None
+        cmds.append(cmd.RedisCmd(
+            cmd = tokens[0].upper(),
+            args = tokens[1:]
+        ))
 
-def respondError(c: socket.socket, err: ValueError) -> None:
-    response = f"-{err}\r\n"
-    c.sendall(response.encode("utf-8"))
+    return cmds, None
 
-def respond(c: socket.socket, command: cmd.RedisCmd) -> None:
-    err = eval.EvalAndRespond(c, command)
-
-    if err is not None:
-        respondError(c, err)
+def respond(c: socket.socket, commands: cmd.RedisCmds) -> None:
+    eval.EvalAndRespond(c, commands)
 
 def RunSyncTCPServer():
     logger.info("Starting a synchronus TCP server on %s %d", config.host, config.port)
@@ -48,7 +56,7 @@ def RunSyncTCPServer():
             logger.info("Client connected with address %s %d, concurrent clients: %d", clientAddress[0], clientAddress[1], con_clients)
 
             while True:
-                command, err = readCommand(clientSocket)
+                command, err = readCommands(clientSocket)
 
                 #client disconnected
                 if command is None and err is None:

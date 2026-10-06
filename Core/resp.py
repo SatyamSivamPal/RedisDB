@@ -1,10 +1,12 @@
 from logger import logger
+from typing import Any
+from Core.eval import RESP_NIL
 
 def readLength(data: bytes) -> tuple[int, int]:
     length = 0
     for pos in range(len(data)):
         b = data[pos]
-        if not (b >= ord('0') and b <= ord("9")):
+        if not (b >= ord('0') and b <= ord('9')):
             return length, pos+2
 
         length = length * 10 + (b - ord('0'))
@@ -62,7 +64,7 @@ def readArray(data: bytes) -> tuple[list | None, int, ValueError | None]:
 
     return elems, pos, None
 
-def DecodeOne(data: bytes) -> tuple[any | None, int, ValueError | None]:
+def DecodeOne(data: bytes) -> tuple[Any | None, int, ValueError | None]:
     if len(data) == 0:
         return None, 0, ValueError("No Data")
 
@@ -81,27 +83,25 @@ def DecodeOne(data: bytes) -> tuple[any | None, int, ValueError | None]:
         case _:
             return None, 0, ValueError("Unknown RESP type")
 
-def DecodeArrayString(data: bytes) -> tuple[list[str], ValueError | None]:
-    value, err = Decode(data)
-    if err is not None:
-        return None, err
-
-    tokens = [None] * len(value)
-    for i in range(len(tokens)):
-        tokens[i] = str(value[i])
-
-    return tokens, None
-
-
-def Decode(data: bytes) -> tuple[any | None, ValueError | None]:
+def Decode(data: bytes) -> tuple[list[Any] | None, ValueError | None]:
     if len(data) == 0:
         logger.error("No Data")
-        return None, ValueError("No Data")
+        return [], ValueError("No Data")
 
-    value, _, err = DecodeOne(data)
-    return value, err
+    index = 0
+    values: list[Any] = []
 
-def Encode(data: any, isSimple: bool) -> bytes:
+    while index < len(data):
+        value, delta, err = DecodeOne(data[index:])
+        if err is not None:
+            return values, err
+
+        index = index + delta
+        values.append(value)
+
+    return values, err
+
+def Encode(data: Any, isSimple: bool) -> bytes:
     match data:
         case str():
             #simple string
@@ -115,5 +115,8 @@ def Encode(data: any, isSimple: bool) -> bytes:
         case int():
             return b":" + str(data).encode("utf-8") + b"\r\n"
 
+        case Exception():
+            return b"-" + str(data).encode("utf-8") + b"\r\n"
+
         case _:
-            return None
+            return RESP_NIL

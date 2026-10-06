@@ -3,7 +3,7 @@ import select
 from logger import logger
 from Config import config
 from Core.expire import DeleteExpiredKeys
-from Server.sync_tcp import readCommand, respond
+from Server.sync_tcp import readCommands, respond
 from datetime import datetime, timedelta
 
 def RunAsyncTCPServer():
@@ -69,8 +69,8 @@ def RunAsyncTCPServer():
                 clientSocket = client["socket"]
                 clientAddress = client["address"]
 
-                command, err = readCommand(clientSocket)
-                if command is None and err is None:
+                commands, err = readCommands(clientSocket)
+                if commands is None and err is None:
                     conn_clients -= 1
                     logger.info("Client Disconnected from %s %d, concurrent clients: %d", clientAddress[0], clientAddress[1], conn_clients)
                     clientSocket.close()
@@ -80,7 +80,7 @@ def RunAsyncTCPServer():
                 if err is not None:
                     logger.error("Command error: %s", err)
 
-                respond(clientSocket, command)
+                respond(clientSocket, commands)
                 
 
 
