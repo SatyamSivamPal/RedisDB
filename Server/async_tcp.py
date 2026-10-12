@@ -5,6 +5,7 @@ from Config import config
 from Core.expire import DeleteExpiredKeys
 from Server.sync_tcp import readCommands, respond
 from datetime import datetime, timedelta
+from Core import aof    
 
 def RunAsyncTCPServer():
     logger.info("Starting an asynchronus TCP server on %s %d", config.host, config.port)
@@ -27,9 +28,9 @@ def RunAsyncTCPServer():
     #AsyncIO starts here!!
 
     #creating EPOLL instance
-    epollFD = select.epoll()
+    config.epollFD = select.epoll()
     serverFD = server.fileno()
-    epollFD.register(
+    config.epollFD.register(
         serverFD,
         select.EPOLLIN
     )
@@ -40,10 +41,14 @@ def RunAsyncTCPServer():
             DeleteExpiredKeys()
             lastCronExecTime = datetime.now()
 
-        events = epollFD.poll(-1)
+        events = config.epollFD.poll(-1)
         for fd, event in events:
+            # notification to the main process about the status of child process
+            if fd == aof.notifyReadFD:
+                aof.FinishRewrite()
+
             #accept the incoming connection from new client
-            if fd == serverFD:
+            elif fd == serverFD:
                 clientSocket, clientAddress = server.accept()
                 conn_clients += 1
                 logger.info("Client connected with address %s %d, concurrent clients: %d", clientAddress[0], clientAddress[1], conn_clients)
@@ -57,13 +62,13 @@ def RunAsyncTCPServer():
                 }
 
                 #Register new client
-                epollFD.register(
+                config.epollFD.register(
                     clientFD,
                     select.EPOLLIN
                 )
 
             #existing client with some command
-            else:
+            elif fd in clients:
                 clientFD = fd
                 client = clients[clientFD]
                 clientSocket = client["socket"]

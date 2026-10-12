@@ -4,6 +4,7 @@ import time
 import socket
 from io import BytesIO
 from Core import cmd
+from Core.aof import AppendAOF, BGRewriteAOF
 
 RESP_NIL = b"$-1\r\n"
 RESP_OK = b"+OK\r\n"
@@ -21,6 +22,8 @@ def evalDEL(args: list[str]) -> bytes:
         if Delete(key):
             countDeleted += 1
 
+    if countDeleted > 0:
+        AppendAOF(["DEL", *args])
     return resp.Encode(countDeleted, False)
 
 def evalEXPIRE(args: list[str]) -> bytes:
@@ -71,6 +74,7 @@ def evalSET(args: list[str]) -> bytes:
 
     #putting the key and value in a Hash Table
     Put(key, NewObj(value, exDurationMs))
+    AppendAOF(["SET", key, value])
     return RESP_OK
 
 def evalGET(args: list[str]) -> bytes:
@@ -128,6 +132,15 @@ def evalPING(args: list[str]) -> bytes:
 
     return res
     
+def evalBGREWRITEAOF(args: list[str]) -> bytes:
+    if len(args) != 0:
+        return resp.Encode(ValueError("ERR wrong number of arguments for 'bgrewrite' command"), False)
+
+    if not BGRewriteAOF():
+        return resp.Encode(ValueError("ERR AOF rewrite is already in progress"), False)
+    
+    return RESP_OK
+
 def EvalAndRespond(c: socket.socket, commands: cmd.RedisCmds) -> ValueError | None:
     response = bytearray()
     buf = BytesIO(response)
@@ -146,6 +159,8 @@ def EvalAndRespond(c: socket.socket, commands: cmd.RedisCmds) -> ValueError | No
                 buf.write(evalDEL(command.args))
             case "EXPIRE":
                 buf.write(evalEXPIRE(command.args))
+            case "BGREWRITEAOF":
+                buf.write(evalBGREWRITEAOF(command.args))
             case _:
                 buf.write(evalPING(command.args))
                 

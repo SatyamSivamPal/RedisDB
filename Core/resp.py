@@ -1,6 +1,7 @@
 from logger import logger
 from typing import Any
 from Core.eval import RESP_NIL
+from io import BytesIO
 
 def readLength(data: bytes) -> tuple[int, int]:
     length = 0
@@ -64,6 +65,7 @@ def readArray(data: bytes) -> tuple[list | None, int, ValueError | None]:
 
     return elems, pos, None
 
+
 def DecodeOne(data: bytes) -> tuple[Any | None, int, ValueError | None]:
     if len(data) == 0:
         return None, 0, ValueError("No Data")
@@ -83,6 +85,7 @@ def DecodeOne(data: bytes) -> tuple[Any | None, int, ValueError | None]:
         case _:
             return None, 0, ValueError("Unknown RESP type")
 
+
 def Decode(data: bytes) -> tuple[list[Any] | None, ValueError | None]:
     if len(data) == 0:
         logger.error("No Data")
@@ -101,6 +104,7 @@ def Decode(data: bytes) -> tuple[list[Any] | None, ValueError | None]:
 
     return values, err
 
+
 def Encode(data: Any, isSimple: bool) -> bytes:
     match data:
         case str():
@@ -114,6 +118,13 @@ def Encode(data: Any, isSimple: bool) -> bytes:
 
         case int():
             return b":" + str(data).encode("utf-8") + b"\r\n"
+
+        case list():
+            buf = BytesIO()
+            for value in data:
+                buf.write(Encode(value, False))
+
+            return b"*" + str(len(data)).encode("utf-8") + b"\r\n" + buf.getvalue()
 
         case Exception():
             return b"-" + str(data).encode("utf-8") + b"\r\n"
