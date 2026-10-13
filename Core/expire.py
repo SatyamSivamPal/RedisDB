@@ -8,9 +8,9 @@ def expireSample() -> float:
     currentTime = int(time.time() * 1000)
 
     for key, obj in list(store.items()):
-        if obj.expiresAt != -1:
+        if obj.ExpiresAt != -1:
             limit -= 1
-            if obj.expiresAt <= currentTime:
+            if obj.ExpiresAt <= currentTime:
                 del store[key]
                 expiredCount += 1
 

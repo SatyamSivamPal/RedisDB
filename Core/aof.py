@@ -30,8 +30,8 @@ def AppendAOF(command: list[str]) -> None:
 def dumpKey(fp, key: str, obj: Obj):
     fp.write(resp.Encode(["SET", key, obj.value], False))
 
-    if obj.expiresAt != -1:
-        fp.write(resp.Encode(["PEXPIREAT", key, obj.expiresAt], False))
+    if obj.ExpiresAt != -1:
+        fp.write(resp.Encode(["PEXPIREAT", key, obj.ExpiresAt], False))
 
 def DumpSnapShot(snapshot: dict[str, Obj], tempFile: str, read_fd: int, write_fd: int) -> None:
     try:

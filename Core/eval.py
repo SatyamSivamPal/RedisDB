@@ -5,6 +5,9 @@ import socket
 from io import BytesIO
 from Core import cmd
 from Core.aof import AppendAOF, BGRewriteAOF
+from Core import type_string
+from Core.object import OBJ_TYPE_STRING, OBJ_ENCODING_INT
+from Core.typeEncoding import assertType, assertEncoding
 
 RESP_NIL = b"$-1\r\n"
 RESP_OK = b"+OK\r\n"
@@ -16,7 +19,7 @@ RESP_MINUS_2 = b":-2\r\n"
 def evalDEL(args: list[str]) -> bytes:
     countDeleted = 0
     if len(args) == 0:
-        return resp.Encode(ValueError("(error) ERR wrong number of arguments for 'del' command"), False)
+        return resp.Encode(ValueError(" ERR wrong number of arguments for 'del' command"), False)
     
     for key in args:
         if Delete(key):
@@ -28,13 +31,13 @@ def evalDEL(args: list[str]) -> bytes:
 
 def evalEXPIRE(args: list[str]) -> bytes:
     if len(args) <= 1:
-        return resp.Encode(ValueError("(error) ERR wrong number of arguments for 'expire' command"), False)
+        return resp.Encode(ValueError(" ERR wrong number of arguments for 'expire' command"), False)
     
     key = args[0]
     try:
         exDurationSec = int(args[1])
     except ValueError:
-        return resp.Encode(ValueError("(error) ERR value is not an integer or out of range"), False)
+        return resp.Encode(ValueError(" ERR value is not an integer or out of range"), False)
 
     obj = Get(key)
 
@@ -42,17 +45,18 @@ def evalEXPIRE(args: list[str]) -> bytes:
     if obj is None:
         return RESP_ZERO
 
-    obj.expiresAt = int(time.time() * 1000) + exDurationSec * 1000
+    obj.ExpiresAt = int(time.time() * 1000) + exDurationSec * 1000
 
     # Return -> 1 if the expires was set
     return RESP_MINUS_1
     
 def evalSET(args: list[str]) -> bytes:
     if len(args) <= 1:
-        return resp.Encode(ValueError("(error) ERR wrong number of arguments for 'set' command"), False)
+        return resp.Encode(ValueError("ERR wrong number of arguments for 'set' command"), False)
 
     key = args[0]
     value = args[1]
+    oType, oEnc = type_string.deduceTypeEncoding(value)
     exDurationMs = -1
     i = 2
 
@@ -62,18 +66,18 @@ def evalSET(args: list[str]) -> bytes:
             case "EX":
                 i += 1
                 if i >= len(args):
-                    return resp.Encode(ValueError("(error) ERR syntax error"), False)
+                    return resp.Encode(ValueError("ERR syntax error"), False)
                 try:
                     exDurationSec = int(args[3])
                 except ValueError:
-                    return resp.Encode(ValueError("(error) ERR value is not an integer or out of range"), False)
+                    return resp.Encode(ValueError("ERR value is not an integer or out of range"), False)
                 exDurationMs = exDurationSec * 1000
             case _:
-                return resp.Encode(ValueError("(error) ERR syntax error"), False)
+                return resp.Encode(ValueError("ERR syntax error"), False)
         i+=1
 
     #putting the key and value in a Hash Table
-    Put(key, NewObj(value, exDurationMs))
+    Put(key, NewObj(value, exDurationMs, oType, oEnc))
     AppendAOF(["SET", key, value])
     return RESP_OK
 
@@ -91,14 +95,14 @@ def evalGET(args: list[str]) -> bytes:
     currentTime = int(time.time() * 1000)
 
     #if key has already expired
-    if obj.expiresAt != -1 and obj.expiresAt <= currentTime:
+    if obj.ExpiresAt != -1 and obj.ExpiresAt <= currentTime:
         return RESP_NIL
 
     return resp.Encode(obj.value, False)
 
 def evalTTL(args: list[str]) -> bytes:
     if len(args) != 1:
-        return resp.Encode(ValueError("(error) ERR wrong number of arguments for 'ttl' command"), False)
+        return resp.Encode(ValueError(" ERR wrong number of arguments for 'ttl' command"), False)
 
     key = args[0]
     obj = Get(key)
@@ -108,12 +112,12 @@ def evalTTL(args: list[str]) -> bytes:
         return RESP_MINUS_2
 
     #if key exists but no expirations time is set for the key -> -1
-    if obj.expiresAt == -1:
+    if obj.ExpiresAt == -1:
         return RESP_MINUS_1
 
     #send the time remaining for the expiry
     currentTime = int(time.time() * 1000)
-    durationMs = obj.expiresAt - currentTime
+    durationMs = obj.ExpiresAt - currentTime
 
     #key has been expired -> -2
     if durationMs < 0 :
@@ -141,6 +145,32 @@ def evalBGREWRITEAOF(args: list[str]) -> bytes:
     
     return RESP_OK
 
+def evalINCR(args: list[str]) -> bytes:
+    if (len(args) != 1):
+        return resp.Encode(ValueError("ERR wrong number of arguments for 'incr' command"), False)
+
+    key: str = args[0]
+    obj = Get(key)
+
+    if obj is None:
+        obj = NewObj("0", -1, OBJ_TYPE_STRING, OBJ_ENCODING_INT)
+        Put(key, obj)
+
+    try:
+        assertType(obj.TypeEncoding, OBJ_TYPE_STRING)
+    except ValueError as err:
+        return resp.Encode(str(err), False)
+
+    try:
+        assertEncoding(obj.TypeEncoding, OBJ_ENCODING_INT)
+    except ValueError as err:
+        return resp.Encode(str(err), False)
+
+    i = int(obj.value, 10)
+    i += 1
+    obj.value = str(i)
+    return resp.Encode(i, False)
+
 def EvalAndRespond(c: socket.socket, commands: cmd.RedisCmds) -> ValueError | None:
     response = bytearray()
     buf = BytesIO(response)
@@ -161,6 +191,8 @@ def EvalAndRespond(c: socket.socket, commands: cmd.RedisCmds) -> ValueError | No
                 buf.write(evalEXPIRE(command.args))
             case "BGREWRITEAOF":
                 buf.write(evalBGREWRITEAOF(command.args))
+            case "INCR":
+                buf.write(evalINCR(command.args))
             case _:
                 buf.write(evalPING(command.args))
                 
