@@ -1,6 +1,11 @@
 host = "0.0.0.0"
 port = "7379"
-keysLimit : int = 10000
+
+keysLimit : int = 10
 max_command_size = 512
+
 AOFFile = "./redis.aof" 
 epollFD = None
+
+EvictionStratergy: str = "allkeys-random"
+EvictionRatio: float = 0.40

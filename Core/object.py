@@ -7,13 +7,13 @@ class Obj:
     value : Any
     ExpiresAt: int
 
-OBJ_TYPE_STRING = 0   # String object
-OBJ_TYPE_LIST = 1     # List object
-OBJ_TYPE_SET = 2      # SET object
-OBJ_TYPE_ZSET = 3     # Sorted set object
-OBJ_TYPE_HASH = 4     # Hash object
-OBJ_TYPE_MODULE = 5   # Module object
-OBJ_TYPE_STREAM = 6   # stream object
+OBJ_TYPE_STRING = 0 << 4  # String object
+OBJ_TYPE_LIST = 1 << 4     # List object
+OBJ_TYPE_SET = 2 << 4      # SET object
+OBJ_TYPE_ZSET = 3 << 4     # Sorted set object
+OBJ_TYPE_HASH = 4 << 4    # Hash object
+OBJ_TYPE_MODULE = 5 << 4   # Module object
+OBJ_TYPE_STREAM = 6 << 4   # stream object
 
 OBJ_ENCODING_RAW = 0   # Raw representaions
 OBJ_ENCODING_INT = 1   # Encoded as integer
