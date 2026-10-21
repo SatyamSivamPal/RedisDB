@@ -1,9 +1,10 @@
 from Core import resp
-from Core.store import Put, NewObj, Get, Delete
+from Core.store import Put, NewObj, Get, Delete, getDB
 import time
-import socket
-from io import BytesIO
+from Core.cmd import Client
+from io import BytesIO, StringIO
 from Core import cmd
+from Config.config import DB_COUNT
 from Core.aof import AppendAOF, BGRewriteAOF
 from Core import type_string
 from Core.object import OBJ_TYPE_STRING, OBJ_ENCODING_INT
@@ -16,30 +17,32 @@ RESP_ONE = b":1\r\n"
 RESP_MINUS_1 = b":-1\r\n"
 RESP_MINUS_2 = b":-2\r\n"
 
-def evalDEL(args: list[str]) -> bytes:
+def evalDEL(args: list[str], client: Client) -> bytes:
     countDeleted = 0
     if len(args) == 0:
         return resp.Encode(ValueError(" ERR wrong number of arguments for 'del' command"), False)
-    
+
+    db = getDB(client.db)
     for key in args:
-        if Delete(key):
+        if Delete(db, key):
             countDeleted += 1
 
     if countDeleted > 0:
         AppendAOF(["DEL", *args])
     return resp.Encode(countDeleted, False)
 
-def evalEXPIRE(args: list[str]) -> bytes:
+def evalEXPIRE(args: list[str], client: Client) -> bytes:
     if len(args) <= 1:
         return resp.Encode(ValueError(" ERR wrong number of arguments for 'expire' command"), False)
-    
+
+    db = getDB(client.db)
     key = args[0]
     try:
         exDurationSec = int(args[1])
     except ValueError:
         return resp.Encode(ValueError(" ERR value is not an integer or out of range"), False)
 
-    obj = Get(key)
+    obj = Get(db, key)
 
     # Return -> 0 if the key does not exists, or operation skipped due to the provided arguments
     if obj is None:
@@ -50,10 +53,11 @@ def evalEXPIRE(args: list[str]) -> bytes:
     # Return -> 1 if the expires was set
     return RESP_MINUS_1
     
-def evalSET(args: list[str]) -> bytes:
+def evalSET(args: list[str], client: Client) -> bytes:
     if len(args) <= 1:
         return resp.Encode(ValueError("ERR wrong number of arguments for 'set' command"), False)
 
+    db = getDB(client.db)
     key = args[0]
     value = args[1]
     oType, oEnc = type_string.deduceTypeEncoding(value)
@@ -77,16 +81,17 @@ def evalSET(args: list[str]) -> bytes:
         i+=1
 
     #putting the key and value in a Hash Table
-    Put(key, NewObj(value, exDurationMs, oType, oEnc))
+    Put(db, key, NewObj(value, exDurationMs, oType, oEnc))
     AppendAOF(["SET", key, value])
     return RESP_OK
 
-def evalGET(args: list[str]) -> bytes:
+def evalGET(args: list[str], client: Client) -> bytes:
     if len(args) != 1:
         return resp.Encode(ValueError("ERR wrong number of arguments for 'get' command"), False)
 
+    db = getDB(client.db)
     key = args[0]
-    obj = Get(key)
+    obj = Get(db, key)
 
     #Key doesnot exists
     if obj is None:
@@ -100,12 +105,13 @@ def evalGET(args: list[str]) -> bytes:
 
     return resp.Encode(obj.value, False)
 
-def evalTTL(args: list[str]) -> bytes:
+def evalTTL(args: list[str], client: Client) -> bytes:
     if len(args) != 1:
         return resp.Encode(ValueError(" ERR wrong number of arguments for 'ttl' command"), False)
 
     key = args[0]
-    obj = Get(key)
+    db = getDB(client.db)
+    obj = Get(db, key)
 
     #Key doesnot exist return -2
     if obj is None:
@@ -136,25 +142,27 @@ def evalPING(args: list[str]) -> bytes:
 
     return res
     
-def evalBGREWRITEAOF(args: list[str]) -> bytes:
+def evalBGREWRITEAOF(args: list[str], client: Client) -> bytes:
+    store = getDB(client.db)
     if len(args) != 0:
         return resp.Encode(ValueError("ERR wrong number of arguments for 'bgrewrite' command"), False)
 
-    if not BGRewriteAOF():
+    if not BGRewriteAOF(store):
         return resp.Encode(ValueError("ERR AOF rewrite is already in progress"), False)
     
     return RESP_OK
 
-def evalINCR(args: list[str]) -> bytes:
+def evalINCR(args: list[str], client: Client) -> bytes:
     if (len(args) != 1):
         return resp.Encode(ValueError("ERR wrong number of arguments for 'incr' command"), False)
 
     key: str = args[0]
-    obj = Get(key)
+    db = getDB(client.db)
+    obj = Get(db, key)
 
     if obj is None:
         obj = NewObj("0", -1, OBJ_TYPE_STRING, OBJ_ENCODING_INT)
-        Put(key, obj)
+        Put(db, key, obj)
 
     try:
         assertType(obj.TypeEncoding, OBJ_TYPE_STRING)
@@ -171,29 +179,50 @@ def evalINCR(args: list[str]) -> bytes:
     obj.value = str(i)
     return resp.Encode(i, False)
 
-def EvalAndRespond(c: socket.socket, commands: cmd.RedisCmds) -> ValueError | None:
+def evalSELECT(args: list[str], client: Client) -> bytes:
+    if len(args) != 1:
+        return resp.Encode(ValueError("ERR wrong number of arguments for 'select' command"), False)
+
+    try:
+        db_index = int(args[0])
+    except ValueError:
+        return resp.Encode(ValueError("ERR invalid DB index", False))
+
+    if not 0 <= db_index < DB_COUNT:
+        return resp.Encode("ERR DB index is out of range", False)
+
+    client.db = db_index
+    return RESP_OK
+
+
+def EvalAndRespond(client: Client, commands: cmd.RedisCmds) -> ValueError | None:
     response = bytearray()
     buf = BytesIO(response)
 
+    clientSocket = client.socket
     for command in commands:
         match command.cmd.upper():
             case "PING":
                 buf.write(evalPING(command.args))
             case "SET": 
-                buf.write(evalSET(command.args))
+                buf.write(evalSET(command.args, client))
             case "GET":
-                buf.write(evalGET(command.args))
+                buf.write(evalGET(command.args, client))
             case "TTL":
-                buf.write(evalTTL(command.args))
+                buf.write(evalTTL(command.args, client))
             case "DEL":
-                buf.write(evalDEL(command.args))
+                buf.write(evalDEL(command.args, client))
             case "EXPIRE":
-                buf.write(evalEXPIRE(command.args))
+                buf.write(evalEXPIRE(command.args, client))
             case "BGREWRITEAOF":
-                buf.write(evalBGREWRITEAOF(command.args))
+                buf.write(evalBGREWRITEAOF(command.args, client))
             case "INCR":
-                buf.write(evalINCR(command.args))
+                buf.write(evalINCR(command.args, client))
+            # case "INFO":
+            #     buf.write(evalINFO(command.args))
+            case "SELECT":
+                buf.write(evalSELECT(command.args, client))
             case _:
                 buf.write(evalPING(command.args))
-                
-    c.sendall(buf.getvalue())
+
+    clientSocket.sendall(buf.getvalue())

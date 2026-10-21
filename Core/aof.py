@@ -1,6 +1,5 @@
 from Config import config
 from logger import logger
-from Core.store import store
 from Core.store import Obj
 from Core import resp
 import os
@@ -59,7 +58,7 @@ def DumpSnapShot(snapshot: dict[str, Obj], tempFile: str, read_fd: int, write_fd
         except OSError:
             pass
 
-def BGRewriteAOF() -> bool:
+def BGRewriteAOF(store: dict[str, Obj]) -> bool:
     global rewriteProcess, rewriteBuffer, isRewriting, notifyReadFD, notifyWriteFD
 
     if isRewriting:

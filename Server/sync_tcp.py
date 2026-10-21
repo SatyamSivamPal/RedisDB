@@ -3,6 +3,7 @@ from typing import Any
 from Config import config
 import socket
 from Core import resp, cmd, eval
+from Core.cmd import Client
 
 def toArrayString(data: list[Any]) -> tuple[list[str], ValueError | None]:
     res:list[str] = [None] * len(data)
@@ -12,8 +13,9 @@ def toArrayString(data: list[Any]) -> tuple[list[str], ValueError | None]:
 
     return res, None
 
-def readCommands(clientSocket: socket.socket) -> tuple[cmd.RedisCmds | None, Exception | None]:
+def readCommands(client: Client) -> tuple[cmd.RedisCmds | None, Exception | None]:
     buffer = bytearray()
+    clientSocket = client.socket
     chunk = clientSocket.recv(512)
 
     if not chunk:
@@ -37,8 +39,8 @@ def readCommands(clientSocket: socket.socket) -> tuple[cmd.RedisCmds | None, Exc
 
     return cmds, None
 
-def respond(c: socket.socket, commands: cmd.RedisCmds) -> None:
-    eval.EvalAndRespond(c, commands)
+def respond(client: Client, commands: cmd.RedisCmds) -> None:
+    eval.EvalAndRespond(client, commands)
 
 def RunSyncTCPServer():
     logger.info("Starting a synchronus TCP server on %s %d", config.host, config.port)

@@ -1,19 +1,21 @@
 import socket
 import select
+import time
 from logger import logger
 from Config import config
-from Core.expire import DeleteExpiredKeys
+from Core.expire import ActiveExpireCycle
 from Server.sync_tcp import readCommands, respond
 from datetime import datetime, timedelta
 from Core import aof    
+from Core.cmd import Client
 
 def RunAsyncTCPServer():
     logger.info("Starting an asynchronus TCP server on %s %d", config.host, config.port)
     max_clients = 20000
     conn_clients = 0
-    cronFrequency = timedelta(seconds=1)
-    lastCronExecTime = datetime.now()
-    clients = {}
+    cronFrequency = 0.1
+    lastCronExecTime = time.monotonic()
+    Clients:dict[int, Client] = {}
 
     # create socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -36,12 +38,17 @@ def RunAsyncTCPServer():
     )
 
     while True:
-        # delete the active keys which are not get
-        if datetime.now() > lastCronExecTime + cronFrequency:
-            DeleteExpiredKeys()
-            lastCronExecTime = datetime.now()
+        # Cron job for server maintanence
+        now = time.monotonic()
+        elapsed = now - lastCronExecTime
+        timeout = max(0.0, cronFrequency - elapsed)
+        
+        events = config.epollFD.poll(timeout)
+        now = time.monotonic()
+        if now - lastCronExecTime >= cronFrequency:
+            ActiveExpireCycle()
+            lastCronExecTime = now
 
-        events = config.epollFD.poll(-1)
         for fd, event in events:
             # notification to the main process about the status of child process
             if fd == aof.notifyReadFD:
@@ -56,10 +63,10 @@ def RunAsyncTCPServer():
                 clientFD = clientSocket.fileno()
 
                 #stores the client
-                clients[clientFD] = {
-                    "socket" : clientSocket,
-                    "address" : clientAddress
-                }
+                Clients[clientFD] = Client(
+                    socket = clientSocket,
+                    address = clientAddress
+                )
 
                 #Register new client
                 config.epollFD.register(
@@ -68,13 +75,13 @@ def RunAsyncTCPServer():
                 )
 
             #existing client with some command
-            elif fd in clients:
-                clientFD = fd
-                client = clients[clientFD]
-                clientSocket = client["socket"]
-                clientAddress = client["address"]
+            elif fd in Clients:
+                client: Client = Clients[fd]
+                clientSocket = client.socket
+                clientAddress = client.address
+                clientDB = client.db
 
-                commands, err = readCommands(clientSocket)
+                commands, err = readCommands(client)
                 if commands is None and err is None:
                     conn_clients -= 1
                     logger.info("Client Disconnected from %s %d, concurrent clients: %d", clientAddress[0], clientAddress[1], conn_clients)
@@ -85,7 +92,7 @@ def RunAsyncTCPServer():
                 if err is not None:
                     logger.error("Command error: %s", err)
 
-                respond(clientSocket, commands)
+                respond(client, commands)
                 
 
 
