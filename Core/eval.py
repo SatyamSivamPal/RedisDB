@@ -194,7 +194,6 @@ def evalSELECT(args: list[str], client: Client) -> bytes:
     client.db = db_index
     return RESP_OK
 
-
 def EvalAndRespond(client: Client, commands: cmd.RedisCmds) -> ValueError | None:
     response = bytearray()
     buf = BytesIO(response)
@@ -218,8 +217,6 @@ def EvalAndRespond(client: Client, commands: cmd.RedisCmds) -> ValueError | None
                 buf.write(evalBGREWRITEAOF(command.args, client))
             case "INCR":
                 buf.write(evalINCR(command.args, client))
-            # case "INFO":
-            #     buf.write(evalINFO(command.args))
             case "SELECT":
                 buf.write(evalSELECT(command.args, client))
             case _:
