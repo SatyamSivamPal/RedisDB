@@ -1,54 +1,65 @@
 import time
 from Config import config
 from Core.eviction import evict
+from Core.clock import getCurrentClock
 from logger import logger
 from Core import object
+from Core.cmd import RedisDB
+from Core.expire import hasExpired
+from Config.config import databases
 
 Obj = object.Obj
 
-#[{}, {}, {}, {}] no. of elements = DB_COUNT {default count = 4}
+def setExpiry(db: RedisDB, key: str, expDurationMs: int) -> None:
+    db.expires[key] = int(time.time() * 1000) + expDurationMs
 
-databases: list[dict[str, "Obj"]] = [
-    {} for _ in range(config.DB_COUNT)
-]
-
-def getDB(db_index: int) -> dict[str, "Obj"]:
+def getDB(db_index: int) -> RedisDB:
     if not 0 <= db_index < config.DB_COUNT:
         raise ValueError("ERR DB index is out of range")
 
     return databases[db_index]
 
-def NewObj(value: str, durationMs: int, oType: int, oEncoding: int) -> Obj:
-    expiresAt = -1
-    if durationMs > 0:
-        expiresAt = int(time.time() * 1000) + durationMs
-
+def NewObj(value: str, oType: int, oEncoding: int) -> Obj:
     return Obj(
         value = value,
         TypeEncoding = oType | oEncoding,
-        ExpiresAt = expiresAt
-    )
+        LastAccessedAt = getCurrentClock()
+    )   
 
-def Put(store: dict[str, Obj], key: str, obj: Obj) -> None:
-    if len(store) >= config.keysLimit:
-        evict(store)
+def Put(db: RedisDB, key: str, obj: Obj, durationMs:int = -1) -> None:
+    obj.LastAccessedAt = getCurrentClock()
 
-    store[key] = obj
+    #total keys accross all the logical databases
+    totalKeys:int = sum(len(database.store) for database in databases)
 
-def Get(store: dict[str, Obj], key: str) -> Obj | None:
-    value = store.get(key)
-    if value is not None:
-        if value.ExpiresAt != -1 and value.ExpiresAt <= int(time.time() * 1000):
-            logger.info("Deleted due to the GET")
-            del store[key]
-            return None
+    if totalKeys >= config.keysLimit:
+        evict()
 
+    db.store[key] = obj
+    if durationMs > 0:
+        setExpiry(db, key, durationMs)
+    else:
+        db.expires.pop(key, None)
+
+def Get(db: RedisDB, key: str) -> Obj | None:
+    value = db.store.get(key)
+    if value is None:
+        return None
+
+    if hasExpired(db, key):
+        logger.info("Deleted due to the GET")
+        del db.store[key]
+        del db.expires[key]
+        return None
+
+    value.LastAccessedAt = getCurrentClock()
     return value
 
-def Delete(store: dict[str, Obj], key: str) -> bool:
-    if key not in store:
+def Delete(db: RedisDB, key: str) -> bool:
+    if key not in db.store:
         return False
 
-    del store[key]
+    del db.store[key]
+    db.expires.pop(key, None)
     return True
 

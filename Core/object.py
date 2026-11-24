@@ -5,7 +5,7 @@ from typing import Any
 class Obj:
     TypeEncoding: int
     value : Any
-    ExpiresAt: int
+    LastAccessedAt: int
 
 OBJ_TYPE_STRING = 0 << 4  # String object
 OBJ_TYPE_LIST = 1 << 4     # List object

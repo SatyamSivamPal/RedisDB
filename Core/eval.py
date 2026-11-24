@@ -1,14 +1,17 @@
 from Core import resp
-from Core.store import Put, NewObj, Get, Delete, getDB
+from Core.store import Put, NewObj, Get, Delete, getDB, setExpiry
+from Config.config import databases
 import time
 from Core.cmd import Client
 from io import BytesIO, StringIO
 from Core import cmd
+from Core.expire import hasExpired
 from Config.config import DB_COUNT
 from Core.aof import AppendAOF, BGRewriteAOF
 from Core import type_string
 from Core.object import OBJ_TYPE_STRING, OBJ_ENCODING_INT
 from Core.typeEncoding import assertType, assertEncoding
+from Core.eviction import evictAllkeysLRU
 
 RESP_NIL = b"$-1\r\n"
 RESP_OK = b"+OK\r\n"
@@ -18,17 +21,18 @@ RESP_MINUS_1 = b":-1\r\n"
 RESP_MINUS_2 = b":-2\r\n"
 
 def evalDEL(args: list[str], client: Client) -> bytes:
-    countDeleted = 0
     if len(args) == 0:
         return resp.Encode(ValueError(" ERR wrong number of arguments for 'del' command"), False)
 
     db = getDB(client.db)
+    countDeleted = 0
     for key in args:
         if Delete(db, key):
             countDeleted += 1
 
     if countDeleted > 0:
-        AppendAOF(["DEL", *args])
+        AppendAOF(client.db, ["DEL", *args])
+
     return resp.Encode(countDeleted, False)
 
 def evalEXPIRE(args: list[str], client: Client) -> bytes:
@@ -48,10 +52,16 @@ def evalEXPIRE(args: list[str], client: Client) -> bytes:
     if obj is None:
         return RESP_ZERO
 
-    obj.ExpiresAt = int(time.time() * 1000) + exDurationSec * 1000
-
+    # Exists but the time is 0 or negative immediately delete the key and return 1
+    exDurationMs = exDurationSec * 1000
+    if exDurationMs <= 0:
+        del db.store[key]
+        db.expires.pop(key, None)
+        return RESP_ONE
+    
     # Return -> 1 if the expires was set
-    return RESP_MINUS_1
+    setExpiry(db, key, exDurationMs)
+    return RESP_ONE
     
 def evalSET(args: list[str], client: Client) -> bytes:
     if len(args) <= 1:
@@ -75,14 +85,16 @@ def evalSET(args: list[str], client: Client) -> bytes:
                     exDurationSec = int(args[3])
                 except ValueError:
                     return resp.Encode(ValueError("ERR value is not an integer or out of range"), False)
+                
                 exDurationMs = exDurationSec * 1000
             case _:
                 return resp.Encode(ValueError("ERR syntax error"), False)
         i+=1
 
     #putting the key and value in a Hash Table
-    Put(db, key, NewObj(value, exDurationMs, oType, oEnc))
-    AppendAOF(["SET", key, value])
+    obj = NewObj(value, oType, oEnc)
+    Put(db, key, obj, exDurationMs)
+    AppendAOF(client.db, ["SET", key, value])
     return RESP_OK
 
 def evalGET(args: list[str], client: Client) -> bytes:
@@ -100,7 +112,7 @@ def evalGET(args: list[str], client: Client) -> bytes:
     currentTime = int(time.time() * 1000)
 
     #if key has already expired
-    if obj.ExpiresAt != -1 and obj.ExpiresAt <= currentTime:
+    if hasExpired(db, key):
         return RESP_NIL
 
     return resp.Encode(obj.value, False)
@@ -117,13 +129,16 @@ def evalTTL(args: list[str], client: Client) -> bytes:
     if obj is None:
         return RESP_MINUS_2
 
+    #Expiration time
+    expiry_time = db.expires.get(key)
+
     #if key exists but no expirations time is set for the key -> -1
-    if obj.ExpiresAt == -1:
+    if expiry_time is None:
         return RESP_MINUS_1
 
     #send the time remaining for the expiry
     currentTime = int(time.time() * 1000)
-    durationMs = obj.ExpiresAt - currentTime
+    durationMs = expiry_time - currentTime
 
     #key has been expired -> -2
     if durationMs < 0 :
@@ -143,11 +158,11 @@ def evalPING(args: list[str]) -> bytes:
     return res
     
 def evalBGREWRITEAOF(args: list[str], client: Client) -> bytes:
-    store = getDB(client.db)
+    
     if len(args) != 0:
         return resp.Encode(ValueError("ERR wrong number of arguments for 'bgrewrite' command"), False)
 
-    if not BGRewriteAOF(store):
+    if not BGRewriteAOF(databases):
         return resp.Encode(ValueError("ERR AOF rewrite is already in progress"), False)
     
     return RESP_OK
@@ -161,7 +176,7 @@ def evalINCR(args: list[str], client: Client) -> bytes:
     obj = Get(db, key)
 
     if obj is None:
-        obj = NewObj("0", -1, OBJ_TYPE_STRING, OBJ_ENCODING_INT)
+        obj = NewObj("0", OBJ_TYPE_STRING, OBJ_ENCODING_INT)
         Put(db, key, obj)
 
     try:
@@ -174,9 +189,13 @@ def evalINCR(args: list[str], client: Client) -> bytes:
     except ValueError as err:
         return resp.Encode(str(err), False)
 
-    i = int(obj.value, 10)
+    try:
+        i = int(obj.value, 10)
+    except ValueError:
+        return resp.Encode(ValueError("ERR value is not an integer or out of range"), False)
     i += 1
     obj.value = str(i)
+    AppendAOF(client.db, ["INCR", key])
     return resp.Encode(i, False)
 
 def evalSELECT(args: list[str], client: Client) -> bytes:
@@ -192,6 +211,13 @@ def evalSELECT(args: list[str], client: Client) -> bytes:
         return resp.Encode("ERR DB index is out of range", False)
 
     client.db = db_index
+    return RESP_OK
+
+def evalLRU(args: list[str], client: Client) -> bytes:
+    if len(args) > 1:
+        return resp.Encode(ValueError("Err invalid number of arguments for the LRU command"), False)
+
+    evictAllkeysLRU()
     return RESP_OK
 
 def EvalAndRespond(client: Client, commands: cmd.RedisCmds) -> ValueError | None:
@@ -219,6 +245,8 @@ def EvalAndRespond(client: Client, commands: cmd.RedisCmds) -> ValueError | None
                 buf.write(evalINCR(command.args, client))
             case "SELECT":
                 buf.write(evalSELECT(command.args, client))
+            case "LRU":
+                buf.write(evalLRU(command.args, client))
             case _:
                 buf.write(evalPING(command.args))
 

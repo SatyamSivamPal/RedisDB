@@ -2,11 +2,13 @@ from Config import config
 from logger import logger
 from Core.store import Obj
 from Core import resp
+from Core.cmd import RedisDB
 import os
 import copy
 import multiprocessing
 from multiprocessing import Process
 import select
+import time
 
 rewriteProcess: Process | None = None
 rewriteBuffer: list[bytes] = []
@@ -15,33 +17,48 @@ notifyReadFD: int | None = None
 notifyWriteFD: int | None = None
 tempFile = config.AOFFile  + ".tmp"
 
-def AppendAOF(command: list[str]) -> None:
+#Append a command to the AOF file. Every command is prefixed with a SELECT 
+#so that redis will know which logical database it belongs to.
+def AppendAOF(dbIndex: int, command: list[str]) -> None:
     global rewriteBuffer
 
-    encode = resp.Encode(command, False)
+    selectCommand = resp.Encode(["SELECT", str(dbIndex)], False)
+    commandPayLoad = resp.Encode(command, False)
+    payload = selectCommand + commandPayLoad
+
     with open(config.AOFFile, "ab") as fp:
-        fp.write(encode)
+        fp.write(payload)
         fp.flush()
 
     if isRewriting:
-        rewriteBuffer.append(encode)
+        rewriteBuffer.append(payload)
 
-def dumpKey(fp, key: str, obj: Obj):
+def dumpKey(fp, key: str, obj: Obj, expiryTime: int | None) -> None:
     fp.write(resp.Encode(["SET", key, obj.value], False))
 
-    if obj.ExpiresAt != -1:
+    if expiryTime is not None:
         fp.write(resp.Encode(["PEXPIREAT", key, obj.ExpiresAt], False))
 
-def DumpSnapShot(snapshot: dict[str, Obj], tempFile: str, read_fd: int, write_fd: int) -> None:
+#child process which work is to write the snapshot of all the databases.
+def DumpSnapShot(snapshot: list[RedisDB], tempFile: str, read_fd: int, write_fd: int) -> None:
     try:
         os.close(read_fd)
+        currentTime = int(time.time() * 1000)
         with open(tempFile, "wb") as fp:
-            for key, obj in snapshot.items():
-                dumpKey(fp, key, obj, )
+            for dbIndex, db in enumerate(snapshot):
+                fp.write(resp.Encode(["SELECT", str(dbIndex)], False))
+                for key, obj in db.store.items():
+                    expiryTime = db.expires.get(key)
+                    #Skips the key that have been expired 
+                    if expiryTime is not None and expiryTime <= currentTime:
+                        continue
 
+                    dumpKey(fp, key, obj, expiryTime)
+                    
             fp.flush()
             os.fsync(fp.fileno())
 
+        #Notify parent process that snapshot is ready
         os.write(write_fd, b"S")
         logger.info("AOF snapshot written successfully")
 
@@ -58,7 +75,8 @@ def DumpSnapShot(snapshot: dict[str, Obj], tempFile: str, read_fd: int, write_fd
         except OSError:
             pass
 
-def BGRewriteAOF(store: dict[str, Obj]) -> bool:
+#Start the background AOF rewrite
+def BGRewriteAOF(databases: list) -> bool:
     global rewriteProcess, rewriteBuffer, isRewriting, notifyReadFD, notifyWriteFD
 
     if isRewriting:
@@ -66,13 +84,15 @@ def BGRewriteAOF(store: dict[str, Obj]) -> bool:
 
     #snapshot taken of the store dataset and also maintain 
     #that only epoll event or main process only update the store
-    snapshot: dict[str, Obj] = copy.deepcopy(store)
+    snapshot: list[RedisDB] = copy.deepcopy(databases)
     rewriteBuffer = []
     isRewriting = True
     read_fd = None
     write_fd = None
 
     try:
+        #create notification pipe read_fd = parent process will read
+        #write_fd = child process will write on that pipe
         read_fd, write_fd = os.pipe()
         context = multiprocessing.get_context("fork")
 
@@ -81,6 +101,7 @@ def BGRewriteAOF(store: dict[str, Obj]) -> bool:
             args=(snapshot, tempFile, read_fd, write_fd)
         )
 
+        #trigering the child process with function name DumpSnapShot
         process.start()
 
         os.close(write_fd)
@@ -118,6 +139,7 @@ def BGRewriteAOF(store: dict[str, Obj]) -> bool:
 
         return False
 
+#Called the parent process when child process sent its completion notifications
 def FinishRewrite() -> bool:
     global rewriteProcess, rewriteBuffer, isRewriting, notifyReadFD
 

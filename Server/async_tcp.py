@@ -26,9 +26,7 @@ def RunAsyncTCPServer():
 
     #listen
     server.listen(max_clients)
-
-    #AsyncIO starts here!!
-
+    
     #creating EPOLL instance
     config.epollFD = select.epoll()
     serverFD = server.fileno()

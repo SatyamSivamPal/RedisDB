@@ -1,3 +1,5 @@
+from Core.cmd import RedisDB
+
 host = "0.0.0.0"
 port = "7379"
 
@@ -10,3 +12,8 @@ epollFD = None
 
 EvictionStratergy: str = "allkeys-random"
 EvictionRatio: float = 0.40
+
+#Intialize databases
+databases: list[RedisDB] = [
+    RedisDB() for _ in range(DB_COUNT)
+]
